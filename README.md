@@ -41,7 +41,7 @@ python3 /Users/walter/agents-skills/agents-info/skills/agents-info/scripts/sessi
 如果之后发布到 GitHub，也可以按常规方式安装：
 
 ```bash
-npx skills add <owner>/agents-info
+npx skills add WalterYOO/agents-info
 ```
 
 ## 用法
