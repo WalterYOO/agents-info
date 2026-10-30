@@ -11,42 +11,64 @@ allowed-tools: Bash(python3:*), Bash(git:*)
 ## 快速使用
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" --md
+# 默认 brief：只列 名称 / 状态 / 启动 / 会话标题
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py"
+
+# brief 子命令：与默认行为相同
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" brief
+
+# detail：全量表格（ID、目录、轮次、最后活动、首条、最近一条、ECC 任务）
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail
+
+# detail + 名称（也支持短 ID / 全 ID / 前缀）：单个会话详情
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail pocketgo-09
 ```
 
-默认输出一张 Markdown 表，末尾附本会话名字和接管提示。直接把输出原样呈现给用户，不要改写、补算或删列。
+默认输出一张 4 列的 Markdown 表，末尾附本会话名字和接管提示。直接把输出原样呈现给用户，不要改写、补算或删列。
 
-用户要机器可读格式、或需要未截断的完整字段时：
+用户要机器可读格式、或需要未截断的完整字段时，在任意子命令后加 `--json`：
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" --json
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail --json
 ```
 
 ## 输出的列
+
+### 默认 / brief
 
 | 列 | 含义 |
 |---|---|
 | 名称 | `SendMessage` / `--resume` 使用的会话名；`★` 表示当前会话 |
 | 状态 | `busy` / `idle`；进程已退出显示“已退出”；`·本` 表示当前会话 |
+| 启动 | 会话启动时间（本地时区） |
+| 会话标题 | Claude Code 自动生成的会话标题（`ai-title` 记录的 `aiTitle`）；新会话尚未生成时显示 `—` |
+
+### detail 追加
+
+| 列 | 含义 |
+|---|---|
 | ID | sessionId 前 8 位，可用于 `--resume` |
 | 目录 | 会话的工作目录（过长时保留末尾路径） |
-| 启动 | 会话启动时间（本地时区） |
 | 轮次 | 真实用户消息条数（已排除 tool_result、系统注入、斜杠命令） |
 | 最后活动 | transcript 最后一条记录的时间，括号内是相对时间 |
-| 会话标题 | Claude Code 自动生成的会话标题（`ai-title` 记录的 `aiTitle`）；新会话尚未生成时显示 `—` |
 | 首条 | 第一条真实用户消息，通常代表这个会话在做什么 |
 | 最近一条 | 最后一条真实用户消息，代表当前进展 |
 | ECC 任务 | 匹配到的 ECC 会话摘要里的前两条 Tasks；没有摘要显示 `—` |
 | 未提交 | 仅在 `--git` 时出现，`git status --porcelain` 的行数 |
 
+`detail <名称>` 会输出单个会话的纵向详情，包含上述全部字段以及完整路径、ECC Tasks/Files、transcript。
+
 ## 可选参数
 
 | 参数 | 作用 |
 |---|---|
+| `brief` | 默认子命令；只输出 名称 / 状态 / 启动 / 会话标题 |
+| `detail` | 输出全量表格 |
+| `detail <名称>` | 查询单个会话；名称、短 ID、全 ID、前缀都可以 |
 | `--json` | 输出 JSON（含完整 sessionId、完整 cwd、ECC tasks/files、transcript 路径） |
 | `--full` | Markdown 表格不截断单元格 |
-| `--no-ecc` | 不读 ECC 摘要，表格少一列 |
-| `--git` | 增加“未提交”列（对非 git 目录显示 `—`） |
+| `--no-ecc` | 仅影响 detail：不读 ECC 摘要，表格少一列 |
+| `--git` | 仅影响 detail：增加“未提交”列（非 git 目录显示 `—`） |
 | `--alive-only` | 只显示进程还活着的会话 |
 | `--limit N` | 最多显示 N 行 |
 
@@ -66,7 +88,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" --json
 
 ## 接到用户问题之后
 
-1. **“哪个会话在做 X？”** —— 优先匹配“会话标题”，再看“首条 / 最近一条 / ECC 任务”，回答时给出名称、短 ID 和目录。
+1. **“哪个会话在做 X？”** —— 先跑默认 brief 看“会话标题”；需要更多线索时跑 `detail`；锁定某个会话后跑 `detail <名称>` 拿完整信息，回答时给出名称、短 ID 和目录。
 2. **“接着那个会话做”** —— 告诉用户 `claude --resume <名字>`，会话内也可以用 `/resume <名字>`；提醒选择器里按 `Ctrl+A` 才显示全部项目。
 3. **“给那个会话发消息”** —— 用 `SendMessage`，`to` 填会话名（脚本输出的名称就是地址）。用户没有明确要求时不要主动发消息。
 4. **“会话刚开的，怎么没内容？”** —— transcript 可能尚未落盘，如实说明，不要编造主题。

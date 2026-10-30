@@ -403,19 +403,60 @@ def sort_sessions(sessions):
 # renderers
 # --------------------------------------------------------------------------
 
-def render_md(sessions, matched, current_id, full, force_git=False):
-    now = datetime.now(timezone.utc)
+def summary_line(matched, shown):
     alive = [s for s in matched if s["alive"]]
     busy = [s for s in alive if s["raw_status"] == "busy"]
     total = len(matched)
-    shown = len(sessions)
-
-    summary = "共 %d 个会话，%d 个在运行（busy %d / idle %d）" % (
+    text = "共 %d 个会话，%d 个在运行（busy %d / idle %d）" % (
         total, len(alive), len(busy), len(alive) - len(busy)
     )
     if shown < total:
-        summary += "；显示前 %d 个" % shown
-    lines = [summary + "。", ""]
+        text += "；显示前 %d 个" % shown
+    return text + "。"
+
+
+def footer_lines(sessions, current_id):
+    lines = []
+    current = next((s for s in sessions if s["session_id"] == current_id), None)
+    if current:
+        lines.append(
+            "本会话：%s（%s，pid %s）"
+            % (current["name"], current["short_id"], current["pid"])
+        )
+    else:
+        lines.append("本会话：未识别（脚本可能不在 Claude Code 会话内运行）")
+    lines.append(
+        "接管会话：claude --resume <名字>；会话内 /resume <名字>"
+        "（选择器里按 Ctrl+A 显示全部项目）"
+    )
+    return lines
+
+
+def render_brief_md(sessions, matched, current_id, full=False):
+    lines = [summary_line(matched, len(sessions)), ""]
+    headers = ["名称", "状态", "启动", "会话标题"]
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+    for session in sessions:
+        is_current = session["session_id"] == current_id
+        name = session["name"] + (" ★" if is_current else "")
+        status = session["status"] + ("·本" if is_current else "")
+        title = session.get("ai_title") or "—"
+        cells = [
+            md_cell(name, None if full else 24),
+            status,
+            fmt_dt(session["_started_dt"]),
+            md_cell(title, None if full else 40),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.extend(footer_lines(matched, current_id))
+    return "\n".join(lines)
+
+
+def render_detail_md(sessions, matched, current_id, full, force_git=False):
+    now = datetime.now(timezone.utc)
+    lines = [summary_line(matched, len(sessions)), ""]
 
     show_git = force_git or any(s["git_dirty"] is not None for s in sessions)
     headers = ["名称", "状态", "ID", "目录", "启动", "轮次", "最后活动",
@@ -470,19 +511,82 @@ def render_md(sessions, matched, current_id, full, force_git=False):
         lines.append("| " + " | ".join(cells) + " |")
 
     lines.append("")
-    current = next((s for s in sessions if s["session_id"] == current_id), None)
-    if current:
+    lines.extend(footer_lines(matched, current_id))
+    return "\n".join(lines)
+
+
+def render_single_md(session, current_id):
+    now = datetime.now(timezone.utc)
+    is_current = session["session_id"] == current_id
+    lines = []
+    lines.append("名称：%s%s" % (session["name"], " ★（本会话）" if is_current else ""))
+    lines.append("状态：%s%s" % (session["status"], "（本会话）" if is_current else ""))
+    lines.append("ID：%s（%s）" % (session["session_id"], session["short_id"]))
+    lines.append(
+        "PID：%s（%s）"
+        % (session["pid"], "运行中" if session["alive"] else "已退出")
+    )
+    lines.append("目录：%s" % (session["cwd"] or "—"))
+
+    started = session.get("_started_dt")
+    lines.append(
+        "启动：%s"
+        % (started.astimezone().strftime("%Y-%m-%d %H:%M:%S") if started else "—")
+    )
+    last = session.get("_last_activity_dt")
+    if last:
         lines.append(
-            "本会话：%s（%s，pid %s）"
-            % (current["name"], current["short_id"], current["pid"])
+            "最后活动：%s（%s）"
+            % (last.astimezone().strftime("%Y-%m-%d %H:%M:%S"), fmt_ago(last, now))
         )
     else:
-        lines.append("本会话：未识别（脚本可能不在 Claude Code 会话内运行）")
-    lines.append(
-        "接管会话：claude --resume <名字>；会话内 /resume <名字>"
-        "（选择器里按 Ctrl+A 显示全部项目）"
-    )
+        lines.append("最后活动：—")
+
+    lines.append("轮次：%d" % session["user_turns"])
+    lines.append("会话标题：%s" % (session.get("ai_title") or "—"))
+    lines.append("首条：%s" % (session.get("first_user_message") or "—"))
+    lines.append("最近一条：%s" % (session.get("last_user_message") or "—"))
+
+    ecc = session.get("ecc")
+    if ecc:
+        lines.append("ECC 摘要：%s" % (ecc.get("path") or "—"))
+        tasks = ecc.get("tasks") or []
+        if tasks:
+            lines.append("  Tasks：")
+            lines.extend("  - %s" % task for task in tasks)
+        files = ecc.get("files") or []
+        if files:
+            lines.append("  Files：")
+            lines.extend("  - %s" % path for path in files)
+    if session.get("git_dirty") is not None:
+        lines.append("未提交：%d" % session["git_dirty"])
+    lines.append("transcript：%s" % (session.get("transcript") or "—"))
+    if session.get("error"):
+        lines.append("错误：%s" % session["error"])
     return "\n".join(lines)
+
+
+def match_sessions(sessions, target):
+    """Match a session by exact name / id, else by name or id prefix."""
+    target = (target or "").strip()
+    if not target:
+        return []
+    exact = [
+        s
+        for s in sessions
+        if s["name"] == target
+        or s["session_id"] == target
+        or s["short_id"] == target
+    ]
+    if exact:
+        return exact
+    lowered = target.lower()
+    return [
+        s
+        for s in sessions
+        if s["name"].lower().startswith(lowered)
+        or s["session_id"].lower().startswith(lowered)
+    ]
 
 
 def render_json(sessions, matched, current_id):
@@ -515,10 +619,22 @@ def render_json(sessions, matched, current_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="List local Claude Code sessions with topic, activity and ECC summary."
+        description="List local Claude Code sessions (brief by default; detail for full info)."
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("brief", "detail"),
+        default="brief",
+        help="brief (default): 名称/状态/启动/会话标题; detail: full table or one session",
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="session name or id (only with detail)",
     )
     output = parser.add_mutually_exclusive_group()
-    output.add_argument("--md", action="store_true", help="markdown table (default)")
+    output.add_argument("--md", action="store_true", help="markdown output (default)")
     output.add_argument("--json", action="store_true", help="machine-readable JSON")
     parser.add_argument("--no-ecc", action="store_true", help="skip ECC session summaries")
     parser.add_argument("--git", action="store_true", help="add uncommitted-file count column")
@@ -527,18 +643,45 @@ def main(argv=None):
     parser.add_argument("--limit", type=int, default=0, help="show at most N sessions")
     args = parser.parse_args(argv)
 
+    if args.command == "brief" and args.target:
+        parser.error("brief 不接受会话名；查询单个会话请用 detail <名称>")
+
     entries = load_registry()
     current_id = detect_current(entries)
-    sessions = [build_session(e, not args.no_ecc, args.git) for e in entries]
-    matched = sort_sessions(sessions)
+    all_sessions = sort_sessions(
+        [build_session(e, not args.no_ecc, args.git) for e in entries]
+    )
+
+    if args.command == "detail" and args.target:
+        matches = match_sessions(all_sessions, args.target)
+        if not matches:
+            sys.stderr.write("未找到会话：%s\n可用会话：\n" % args.target)
+            for session in all_sessions:
+                sys.stderr.write("  %s（%s）\n" % (session["name"], session["short_id"]))
+            return 2
+        if len(matches) > 1:
+            sys.stderr.write("会话名不唯一：%s\n候选：\n" % args.target)
+            for session in matches:
+                sys.stderr.write("  %s（%s）\n" % (session["name"], session["short_id"]))
+            return 2
+        session = matches[0]
+        if args.json:
+            print(render_json([session], [session], current_id))
+        else:
+            print(render_single_md(session, current_id))
+        return 0
+
+    matched = all_sessions
     if args.alive_only:
         matched = [s for s in matched if s["alive"]]
     shown = matched[: args.limit] if args.limit and args.limit > 0 else matched
 
     if args.json:
         print(render_json(shown, matched, current_id))
+    elif args.command == "brief":
+        print(render_brief_md(shown, matched, current_id, args.full))
     else:
-        print(render_md(shown, matched, current_id, args.full, force_git=args.git))
+        print(render_detail_md(shown, matched, current_id, args.full, force_git=args.git))
     return 0
 
 

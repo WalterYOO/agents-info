@@ -47,25 +47,42 @@ npx skills add <owner>/agents-info
 ## 用法
 
 ```bash
-python3 skills/agents-info/scripts/sessions_table.py --md          # 默认：Markdown 表格
-python3 skills/agents-info/scripts/sessions_table.py --json        # 机器可读
-python3 skills/agents-info/scripts/sessions_table.py --full        # 不截断单元格
-python3 skills/agents-info/scripts/sessions_table.py --no-ecc      # 不读 ECC 摘要
-python3 skills/agents-info/scripts/sessions_table.py --alive-only  # 只看还活着的
-python3 skills/agents-info/scripts/sessions_table.py --limit 5     # 只看前 5 行
-python3 skills/agents-info/scripts/sessions_table.py --git         # 增加未提交文件数
+# 默认 brief：名称 / 状态 / 启动 / 会话标题
+python3 skills/agents-info/scripts/sessions_table.py
+
+# brief 子命令：与默认相同
+python3 skills/agents-info/scripts/sessions_table.py brief
+
+# detail：全量表格
+python3 skills/agents-info/scripts/sessions_table.py detail
+
+# detail + 名称（短 ID / 全 ID / 前缀均可）：单个会话
+python3 skills/agents-info/scripts/sessions_table.py detail pocketgo-09
 ```
 
-输出示例（截断）：
+通用参数：
+
+```bash
+python3 skills/agents-info/scripts/sessions_table.py --json        # 机器可读
+python3 skills/agents-info/scripts/sessions_table.py --full        # 不截断单元格
+python3 skills/agents-info/scripts/sessions_table.py --no-ecc      # 不读 ECC 摘要（detail）
+python3 skills/agents-info/scripts/sessions_table.py --alive-only  # 只看还活着的
+python3 skills/agents-info/scripts/sessions_table.py --limit 5     # 只看前 5 行
+python3 skills/agents-info/scripts/sessions_table.py --git         # 增加未提交文件数（detail）
+```
+
+默认输出示例：
 
 ```
 共 3 个会话，2 个在运行（busy 1 / idle 1）。
 
-| 名称 | 状态 | ID | 目录 | 启动 | 轮次 | 最后活动 | 会话标题 | 首条 | 最近一条 | ECC 任务 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| agents-info-2b ★ | busy·本 | cd5ea42b | ~/agents-skills/agents-info | 10-30 09:34 | 3 | 10-30 09:59 (刚刚) | agents-info skill 实现 | 实现 agents-info skill | 补上会话标题列 | — |
-| pocketgo-09 | idle | 04680c0b | ~/dsh/embodied_ai_umi/pocketgo | 10-27 23:42 | 8 | 10-28 17:14 (1天前) | calibration_guide.html 上传与 index.html 引导卡 | 把 calibration_guide 传到服务器 | 修订 nginx 引导页 | 上传 guide + 改 index |
+| 名称 | 状态 | 启动 | 会话标题 |
+|---|---|---|---|
+| agents-info-2b ★ | busy·本 | 10-30 09:34 | agents-info skill 实现 |
+| pocketgo-09 | idle | 10-27 23:42 | calibration_guide.html 上传与 index.html 引导卡 |
 ```
+
+`detail` 输出全量表格；`detail <名称>` 输出单个会话的纵向详情，包含 ID、PID、目录、轮次、首条、最近一条、ECC Tasks/Files 和 transcript 路径。
 
 ## 数据从哪来
 
