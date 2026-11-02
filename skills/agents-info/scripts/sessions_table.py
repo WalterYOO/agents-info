@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 HOME = os.path.expanduser("~")
 REGISTRY_DIR = os.path.join(HOME, ".claude", "sessions")
@@ -142,6 +142,51 @@ def md_cell(text, limit=None):
     return value.replace("|", "\\|")
 
 
+def split_terms(query):
+    """Space-separated keywords; every term must appear (case-insensitive)."""
+    return [term for term in (query or "").lower().split() if term]
+
+
+def all_terms_in(terms, text):
+    haystack = (text or "").lower()
+    return all(term in haystack for term in terms)
+
+
+def snippet(text, terms, width=40):
+    """Return a short window around the earliest matching keyword."""
+    text = one_line(text)
+    lowered = text.lower()
+    positions = [lowered.find(term) for term in terms if lowered.find(term) >= 0]
+    pos = min(positions) if positions else 0
+    start = max(0, pos - width)
+    end = min(len(text), pos + width)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    return prefix + text[start:end] + suffix
+
+
+def parse_since(value):
+    """Parse 30m / 12h / 7d / 3w or a local date into an aware UTC datetime."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    now = datetime.now(timezone.utc)
+    match = re.fullmatch(r"(\d+)\s*(m|h|d|w)", value, re.IGNORECASE)
+    if match:
+        unit = match.group(2).lower()
+        seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
+        return now - timedelta(seconds=int(match.group(1)) * seconds)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        return parsed.replace(
+            tzinfo=datetime.now().astimezone().tzinfo
+        ).astimezone(timezone.utc)
+    return None
+
+
 # --------------------------------------------------------------------------
 # transcript
 # --------------------------------------------------------------------------
@@ -169,13 +214,47 @@ def user_text(obj):
     return text[:MAX_TEXT]
 
 
-def scan_transcript(path):
+def content_texts(obj):
+    """Text blocks of a user/assistant record, for deep content matching."""
+    if obj.get("isMeta"):
+        return []
+    kind = obj.get("type")
+    if kind not in ("user", "assistant"):
+        return []
+    message = obj.get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [
+            item.get("text") or ""
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+    else:
+        return []
+    out = []
+    for text in texts:
+        text = one_line(text)
+        if not text:
+            continue
+        if kind == "user" and (text.startswith("<") or text in SKIP_TEXTS):
+            continue
+        out.append(text)
+    return out
+
+
+def scan_transcript(path, deep_matchers=None):
+    matchers = [list(m) for m in (deep_matchers or [])]
+    needles = [[term.encode("utf-8") for term in terms] for terms in matchers]
+    pending = set(range(len(matchers)))
     info = {
         "turns": 0,
         "first": None,
         "last": None,
         "ai_title": None,
         "last_activity": None,
+        "deep_hits": [None] * len(matchers),
         "error": None,
     }
     try:
@@ -193,6 +272,27 @@ def scan_transcript(path):
                         title = one_line(title_obj.get("aiTitle") or "")
                         if title:
                             info["ai_title"] = title[:MAX_TEXT]
+                if pending:
+                    low_raw = raw.lower()
+                    candidates = [
+                        index
+                        for index in pending
+                        if all(needle in low_raw for needle in needles[index])
+                    ]
+                    if candidates:
+                        try:
+                            obj = json.loads(raw)
+                        except ValueError:
+                            obj = None
+                        if isinstance(obj, dict):
+                            texts = content_texts(obj)
+                            for index in candidates:
+                                terms = matchers[index]
+                                for text in texts:
+                                    if all(term in text.lower() for term in terms):
+                                        info["deep_hits"][index] = snippet(text, terms)
+                                        pending.discard(index)
+                                        break
                 if not USER_TYPE_RE.search(raw):
                     continue
                 try:
@@ -335,13 +435,13 @@ def detect_current(entries):
     return None
 
 
-def build_session(entry, include_ecc, include_git):
+def build_session(entry, include_ecc, include_git, deep_matchers=None):
     session_id = entry["sessionId"]
     cwd = entry.get("cwd") or ""
     started = from_millis(entry.get("startedAt"))
     transcript = transcript_path(cwd, session_id)
     if transcript:
-        scan = scan_transcript(transcript)
+        scan = scan_transcript(transcript, deep_matchers)
     else:
         scan = {
             "turns": 0,
@@ -349,6 +449,7 @@ def build_session(entry, include_ecc, include_git):
             "last": None,
             "ai_title": None,
             "last_activity": None,
+            "deep_hits": [None] * len(deep_matchers or []),
             "error": "transcript 不存在",
         }
 
@@ -385,6 +486,7 @@ def build_session(entry, include_ecc, include_git):
         "error": scan["error"],
         "_started_dt": started,
         "_last_activity_dt": last_activity,
+        "_deep_hits": scan["deep_hits"],
     }
 
 
@@ -589,6 +691,161 @@ def match_sessions(sessions, target):
     ]
 
 
+# --------------------------------------------------------------------------
+# filter
+# --------------------------------------------------------------------------
+
+FILTER_FIELDS = ("name", "title", "cwd", "task", "content")
+FILTER_FIELD_LABELS = {
+    "name": "名称",
+    "title": "标题",
+    "cwd": "目录",
+    "task": "任务",
+    "content": "内容",
+}
+
+
+def build_filter_specs(args, parser):
+    """Turn CLI flags into filter specs; deep matchers feed the transcript scan."""
+    specs = []
+    if args.target:
+        specs.append({"field": "any", "terms": split_terms(args.target)})
+    for field in FILTER_FIELDS:
+        value = getattr(args, field)
+        if value:
+            specs.append({"field": field, "terms": split_terms(value)})
+    specs = [spec for spec in specs if spec["terms"]]
+    if not specs and not (args.status or args.since):
+        parser.error(
+            "filter 需要查询条件：filter <关键字>、"
+            "filter --name/--title/--cwd/--task/--content <关键字>，"
+            "或 filter --status/--since"
+        )
+    matchers = []
+    if not args.quick:
+        for spec in specs:
+            if spec["field"] in ("any", "content"):
+                spec["deep_index"] = len(matchers)
+                matchers.append(spec["terms"])
+    return specs, matchers
+
+
+def session_field_text(session, field):
+    if field == "name":
+        return session.get("name") or ""
+    if field == "title":
+        return session.get("ai_title") or ""
+    if field == "cwd":
+        return session.get("cwd") or ""
+    if field == "task":
+        ecc = session.get("ecc") or {}
+        return " ".join((ecc.get("tasks") or []) + (ecc.get("files") or []))
+    return ""
+
+
+def quick_content_hit(session, terms):
+    for text in (
+        session.get("first_user_message"),
+        session.get("last_user_message"),
+    ):
+        if text and all_terms_in(terms, text):
+            return snippet(text, terms)
+    return None
+
+
+def deep_content_hit(session, index):
+    hits = session.get("_deep_hits") or []
+    if 0 <= index < len(hits):
+        return hits[index]
+    return None
+
+
+def any_field_hit(session, spec):
+    terms = spec["terms"]
+    for field in ("name", "title", "cwd", "task"):
+        text = session_field_text(session, field)
+        if text and all_terms_in(terms, text):
+            return FILTER_FIELD_LABELS[field], snippet(text, terms)
+    hit = quick_content_hit(session, terms)
+    if hit:
+        return "内容", hit
+    if "deep_index" in spec:
+        hit = deep_content_hit(session, spec["deep_index"])
+        if hit:
+            return "内容", hit
+    return None
+
+
+def apply_filter(session, specs):
+    """Return the hit list when a session satisfies every spec, else None."""
+    hits = []
+    for spec in specs:
+        field = spec["field"]
+        terms = spec["terms"]
+        if field == "any":
+            found = any_field_hit(session, spec)
+            if found is None:
+                return None
+            hits.append({"field": found[0], "snippet": found[1]})
+        elif field == "content":
+            hit = quick_content_hit(session, terms)
+            if not hit and "deep_index" in spec:
+                hit = deep_content_hit(session, spec["deep_index"])
+            if not hit:
+                return None
+            hits.append({"field": "内容", "snippet": hit})
+        else:
+            text = session_field_text(session, field)
+            if not all_terms_in(terms, text):
+                return None
+            hits.append(
+                {"field": FILTER_FIELD_LABELS[field], "snippet": snippet(text, terms)}
+            )
+    return hits
+
+
+def status_ok(session, wanted):
+    if wanted == "alive":
+        return session["alive"]
+    if wanted == "exited":
+        return not session["alive"]
+    return session["raw_status"] == wanted
+
+
+def render_filter_md(sessions, matched_count, total, current_id, full=False):
+    if matched_count:
+        line = "命中 %d 个会话（共 %d 个）" % (matched_count, total)
+        if len(sessions) < matched_count:
+            line += "；显示前 %d 个" % len(sessions)
+    else:
+        line = "没有匹配的会话（共 %d 个）" % total
+    lines = [line + "。", ""]
+    headers = ["名称", "状态", "启动", "会话标题", "命中"]
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+    cap = None if full else 44
+    for session in sessions:
+        is_current = session["session_id"] == current_id
+        name = session["name"] + (" ★" if is_current else "")
+        status = session["status"] + ("·本" if is_current else "")
+        title = session.get("ai_title") or "—"
+        hits = session.get("filter_hits") or []
+        hit_text = "；".join(
+            "%s：%s" % (hit["field"], md_cell(hit["snippet"], cap)) for hit in hits
+        ) or "—"
+        cells = [
+            md_cell(name, None if full else 24),
+            status,
+            fmt_dt(session["_started_dt"]),
+            md_cell(title, None if full else 40),
+            hit_text,
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.extend(footer_lines(sessions, current_id))
+    return "\n".join(lines)
+
+
 def render_json(sessions, matched, current_id):
     current = next((s for s in matched if s["session_id"] == current_id), None)
     payload = {
@@ -624,14 +881,15 @@ def main(argv=None):
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("brief", "detail"),
+        choices=("brief", "detail", "filter"),
         default="brief",
-        help="brief (default): 名称/状态/启动/会话标题; detail: full table or one session",
+        help="brief (default): 名称/状态/启动/会话标题; detail: full table or one session; "
+        "filter: search sessions by keyword",
     )
     parser.add_argument(
         "target",
         nargs="?",
-        help="session name or id (only with detail)",
+        help="detail: session name or id; filter: search keyword",
     )
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--md", action="store_true", help="markdown output (default)")
@@ -641,16 +899,91 @@ def main(argv=None):
     parser.add_argument("--full", action="store_true", help="do not truncate markdown cells")
     parser.add_argument("--alive-only", action="store_true", help="hide exited sessions")
     parser.add_argument("--limit", type=int, default=0, help="show at most N sessions")
+    parser.add_argument("--name", help="filter: 名称关键字")
+    parser.add_argument("--title", help="filter: 会话标题关键字")
+    parser.add_argument("--cwd", help="filter: 工作目录关键字")
+    parser.add_argument("--task", help="filter: ECC 任务/文件关键字")
+    parser.add_argument("--content", help="filter: 对话内容关键字（深扫 transcript）")
+    parser.add_argument(
+        "--status",
+        choices=("busy", "idle", "alive", "exited"),
+        help="filter: 只看某个状态",
+    )
+    parser.add_argument(
+        "--since",
+        help="filter: 只看最近活动在此之后的，如 30m / 12h / 7d / 2026-10-01",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="filter: 内容匹配只看首尾消息，不深扫 transcript",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "brief" and args.target:
         parser.error("brief 不接受会话名；查询单个会话请用 detail <名称>")
 
+    filter_options = (
+        args.name
+        or args.title
+        or args.cwd
+        or args.task
+        or args.content
+        or args.status
+        or args.since
+        or args.quick
+    )
+    if args.command != "filter" and filter_options:
+        parser.error(
+            "--name/--title/--cwd/--task/--content/--status/--since/--quick 仅用于 filter"
+        )
+
+    specs, deep_matchers = [], []
+    since_dt = None
+    if args.command == "filter":
+        specs, deep_matchers = build_filter_specs(args, parser)
+        if args.since:
+            since_dt = parse_since(args.since)
+            if since_dt is None:
+                parser.error(
+                    "无法解析 --since：%s（示例：30m / 12h / 7d / 2026-10-01）" % args.since
+                )
+
     entries = load_registry()
     current_id = detect_current(entries)
     all_sessions = sort_sessions(
-        [build_session(e, not args.no_ecc, args.git) for e in entries]
+        [build_session(e, not args.no_ecc, args.git, deep_matchers) for e in entries]
     )
+
+    if args.command == "filter":
+        candidates = all_sessions
+        if args.status:
+            candidates = [s for s in candidates if status_ok(s, args.status)]
+        if since_dt is not None:
+            candidates = [
+                s
+                for s in candidates
+                if s.get("_last_activity_dt") and s["_last_activity_dt"] >= since_dt
+            ]
+        matched = []
+        for session in candidates:
+            hits = apply_filter(session, specs)
+            if hits is None:
+                continue
+            session["filter_hits"] = hits
+            matched.append(session)
+        if args.alive_only:
+            matched = [s for s in matched if s["alive"]]
+        shown = matched[: args.limit] if args.limit and args.limit > 0 else matched
+        if args.json:
+            print(render_json(shown, matched, current_id))
+        else:
+            print(
+                render_filter_md(
+                    shown, len(matched), len(all_sessions), current_id, args.full
+                )
+            )
+        return 0
 
     if args.command == "detail" and args.target:
         matches = match_sessions(all_sessions, args.target)

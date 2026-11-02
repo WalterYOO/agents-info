@@ -1,6 +1,6 @@
 ---
 name: agents-info
-description: 列出本机所有 Claude Code 会话（session）的实时名单与详情：名字、状态、目录、启动时间、用户轮次、会话标题、首条、最近一条消息、ECC 任务摘要。当用户问“有哪些 session / 会话在跑”“某个会话在聊什么”“上次那个做 X 的会话是哪次”，想找回旧会话，或在 /resume、SendMessage、跨会话交接之前需要辨认会话时使用。
+description: 列出本机所有 Claude Code 会话（session）的实时名单与详情：名字、状态、目录、启动时间、用户轮次、会话标题、首条、最近一条消息、ECC 任务摘要；也可按名称、标题、目录、任务或对话内容关键字检索会话。当用户问“有哪些 session / 会话在跑”“某个会话在聊什么”“上次那个做 X 的会话是哪次”，想找回旧会话，或在 /resume、SendMessage、跨会话交接之前需要辨认会话时使用。
 allowed-tools: Bash(python3:*), Bash(git:*)
 ---
 
@@ -22,6 +22,12 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail
 
 # detail + 名称（也支持短 ID / 全 ID / 前缀）：单个会话详情
 python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail pocketgo-09
+
+# filter：按关键字找会话（名称/标题/目录/ECC 任务/对话内容任意命中）
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" filter 部署
+
+# filter 限定字段；多个字段需同时满足
+python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" filter --name pocketgo --content 校准
 ```
 
 默认输出一张 4 列的 Markdown 表，末尾附本会话名字和接管提示。直接把输出原样呈现给用户，不要改写、补算或删列。
@@ -58,6 +64,15 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail --json
 
 `detail <名称>` 会输出单个会话的纵向详情，包含上述全部字段以及完整路径、ECC Tasks/Files、transcript。
 
+### filter
+
+| 列 | 含义 |
+|---|---|
+| 名称 / 状态 / 启动 / 会话标题 | 与 brief 相同 |
+| 命中 | 命中的字段（名称 / 标题 / 目录 / 任务 / 内容）和上下文片段；多个条件时用 `；` 分隔 |
+
+关键词规则：忽略大小写；空格分隔的多个关键词要求全部命中。`--content` 默认深扫完整 transcript（用户消息 + 助手文本，不含工具结果/thinking），`--quick` 则只检查首尾消息。
+
 ## 可选参数
 
 | 参数 | 作用 |
@@ -65,7 +80,12 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail --json
 | `brief` | 默认子命令；只输出 名称 / 状态 / 启动 / 会话标题 |
 | `detail` | 输出全量表格 |
 | `detail <名称>` | 查询单个会话；名称、短 ID、全 ID、前缀都可以 |
-| `--json` | 输出 JSON（含完整 sessionId、完整 cwd、ECC tasks/files、transcript 路径） |
+| `filter <关键字>` | 全字段检索：名称 / 标题 / 目录 / ECC 任务 / 对话内容，任意命中即可 |
+| `filter --name/--title/--cwd/--task/--content <关键字>` | filter 限定字段；同时给多个字段时为 AND |
+| `--status busy\|idle\|alive\|exited` | filter 按状态过滤 |
+| `--since 30m\|12h\|7d\|2026-10-01` | filter 按最后活动时间过滤 |
+| `--quick` | filter 内容匹配只看首尾消息，不深扫 transcript |
+| `--json` | 输出 JSON（含完整 sessionId、完整 cwd、ECC tasks/files、transcript 路径；filter 时额外含 `filter_hits`） |
 | `--full` | Markdown 表格不截断单元格 |
 | `--no-ecc` | 仅影响 detail：不读 ECC 摘要，表格少一列 |
 | `--git` | 仅影响 detail：增加“未提交”列（非 git 目录显示 `—`） |
@@ -89,10 +109,11 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail --json
 ## 接到用户问题之后
 
 1. **“哪个会话在做 X？”** —— 先跑默认 brief 看“会话标题”；需要更多线索时跑 `detail`；锁定某个会话后跑 `detail <名称>` 拿完整信息，回答时给出名称、短 ID 和目录。
-2. **“接着那个会话做”** —— 告诉用户 `claude --resume <名字>`，会话内也可以用 `/resume <名字>`；提醒选择器里按 `Ctrl+A` 才显示全部项目。
-3. **“给那个会话发消息”** —— 用 `SendMessage`，`to` 填会话名（脚本输出的名称就是地址）。用户没有明确要求时不要主动发消息。
-4. **“会话刚开的，怎么没内容？”** —— transcript 可能尚未落盘，如实说明，不要编造主题。
-5. **需要 cloud / Remote Control 会话** —— 脚本读不到服务端名单，调用 `ListAgents` 工具补一份，再和本地表并列说明。
+2. **“哪个会话提到过 X / 上次我们聊 Y 是哪次？”** —— 跑 `filter X`；命中太多时用 `--since 7d` 缩时间，或按 `--name` / `--content` 缩字段。结果里的“命中”列给出字段和上下文片段；需要完整内容再对命中的名称跑 `detail <名称>`。
+3. **“接着那个会话做”** —— 告诉用户 `claude --resume <名字>`，会话内也可以用 `/resume <名字>`；提醒选择器里按 `Ctrl+A` 才显示全部项目。
+4. **“给那个会话发消息”** —— 用 `SendMessage`，`to` 填会话名（脚本输出的名称就是地址）。用户没有明确要求时不要主动发消息。
+5. **“会话刚开的，怎么没内容？”** —— transcript 可能尚未落盘，如实说明，不要编造主题。
+6. **需要 cloud / Remote Control 会话** —— 脚本读不到服务端名单，调用 `ListAgents` 工具补一份，再和本地表并列说明。
 
 ## 边界
 

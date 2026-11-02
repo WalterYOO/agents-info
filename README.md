@@ -58,6 +58,12 @@ python3 skills/agents-info/scripts/sessions_table.py detail
 
 # detail + 名称（短 ID / 全 ID / 前缀均可）：单个会话
 python3 skills/agents-info/scripts/sessions_table.py detail pocketgo-09
+
+# filter：按关键字找会话（名称/标题/目录/ECC 任务/对话内容任意命中）
+python3 skills/agents-info/scripts/sessions_table.py filter 部署
+
+# filter 限定字段；多个字段需同时满足
+python3 skills/agents-info/scripts/sessions_table.py filter --name pocketgo --content 校准
 ```
 
 通用参数：
@@ -70,6 +76,30 @@ python3 skills/agents-info/scripts/sessions_table.py --alive-only  # 只看还�
 python3 skills/agents-info/scripts/sessions_table.py --limit 5     # 只看前 5 行
 python3 skills/agents-info/scripts/sessions_table.py --git         # 增加未提交文件数（detail）
 ```
+
+### filter 检索
+
+```bash
+# 全字段模糊查找：名称、会话标题、目录、ECC 任务、对话内容
+python3 skills/agents-info/scripts/sessions_table.py filter 部署
+
+# 限定字段（可组合，多个字段为 AND）
+python3 skills/agents-info/scripts/sessions_table.py filter --name pocketgo
+python3 skills/agents-info/scripts/sessions_table.py filter --title 校准
+python3 skills/agents-info/scripts/sessions_table.py filter --cwd embodied
+python3 skills/agents-info/scripts/sessions_table.py filter --task transcript
+python3 skills/agents-info/scripts/sessions_table.py filter --content "部署 失败"
+
+# 叠加状态 / 时间，或只做首尾消息快查
+python3 skills/agents-info/scripts/sessions_table.py filter 部署 --status busy --since 7d
+python3 skills/agents-info/scripts/sessions_table.py filter --content 校准 --quick
+
+# 不带关键字，只按状态 / 时间筛选
+python3 skills/agents-info/scripts/sessions_table.py filter --status busy
+python3 skills/agents-info/scripts/sessions_table.py filter --since 2d
+```
+
+关键词规则：忽略大小写；空格分隔的多个关键词要求**全部命中**。`--content` 默认深扫完整 transcript（用户消息 + 助手文本，不含工具结果和 thinking），只解析包含关键词的行；`--quick` 只检查首条 / 最近一条用户消息。输出在 brief 的列后追加“命中”列，给出命中的字段和上下文片段；`--json` 时每个会话多一个 `filter_hits` 数组。
 
 默认输出示例：
 
