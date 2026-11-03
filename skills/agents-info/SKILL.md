@@ -47,7 +47,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail --json
 | 名称 | `SendMessage` / `--resume` 使用的会话名；`★` 表示当前会话 |
 | 状态 | `busy` / `idle`；进程已退出显示“已退出”；`·本` 表示当前会话 |
 | 启动 | 会话启动时间（本地时区） |
-| 会话标题 | Claude Code 自动生成的会话标题（`ai-title` 记录的 `aiTitle`）；新会话尚未生成时显示 `—` |
+| 会话标题 | 优先 `custom-title` 的 `customTitle`（`/rename` 或手动补写），否则 `ai-title` 的 `aiTitle`；都没有时显示 `—` |
 
 ### detail 追加
 
@@ -97,12 +97,12 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/sessions_table.py" detail --json
 | 来源 | 提供什么 | 注意 |
 |---|---|---|
 | `~/.claude/sessions/<pid>.json` | 名字、sessionId、cwd、启动时间、busy/idle、pid | 进程退出后文件仍会留下，脚本用 `kill(pid, 0)` 判断是否真活着 |
-| `~/.claude/projects/<slug>/<sessionId>.jsonl` | 会话标题（`aiTitle`）、首尾用户消息、轮次、最后活动 | slug 规则是“所有非字母数字字符换成 `-`”，不是简单把 `/` 换成 `-` |
+| `~/.claude/projects/<slug>/<sessionId>.jsonl` | 会话标题（`customTitle` / `aiTitle`）、首尾用户消息、轮次、最后活动 | slug 规则是“所有非字母数字字符换成 `-`”，不是简单把 `/` 换成 `-` |
 | `~/.claude/session-data/*-<sessionId 后 8 位>-session.tmp` | ECC 摘出的 Tasks / Files Modified | 新会话可能还没有摘要；文件名匹配用的是 sessionId 去掉 `-` 后的末 8 位 |
 
 ## 关于“干了什么”
 
-- “会话标题”直接取自 transcript 的 `ai-title.aiTitle`，是 Claude Code 自己生成的短标题，脚本不额外调用模型。
+- “会话标题”优先取自 transcript 的 `custom-title.customTitle`（用户 `/rename` 或手动补写），没有时取 `ai-title.aiTitle`；脚本不额外调用模型。
 - 如果用户要截图里那种更像人话的总结，可以基于“会话标题 + 首条 + ECC 任务”压成一句话；只能压缩已有信息，不要补造没出现的事实。
 - `aiTitle` 可能停留在会话中途的某个子话题上；与“首条”冲突时，以首条为准，并在回答里说明。
 

@@ -29,6 +29,7 @@ SESSION_DATA_DIR = os.path.join(HOME, ".claude", "session-data")
 
 USER_TYPE_RE = re.compile(rb'"type"\s*:\s*"user"')
 AI_TITLE_RE = re.compile(rb'"type"\s*:\s*"ai-title"')
+CUSTOM_TITLE_RE = re.compile(rb'"type"\s*:\s*"custom-title"')
 TS_RE = re.compile(rb'"timestamp"\s*:\s*"([^"]+)"')
 
 # System-generated user records that look like user turns but are not.
@@ -248,6 +249,7 @@ def scan_transcript(path, deep_matchers=None):
     matchers = [list(m) for m in (deep_matchers or [])]
     needles = [[term.encode("utf-8") for term in terms] for terms in matchers]
     pending = set(range(len(matchers)))
+    custom_title = None
     info = {
         "turns": 0,
         "first": None,
@@ -263,15 +265,21 @@ def scan_transcript(path, deep_matchers=None):
                 match = TS_RE.search(raw)
                 if match:
                     info["last_activity"] = match.group(1).decode("utf-8", "replace")
-                if AI_TITLE_RE.search(raw):
+                if CUSTOM_TITLE_RE.search(raw) or AI_TITLE_RE.search(raw):
                     try:
                         title_obj = json.loads(raw)
                     except ValueError:
                         title_obj = None
-                    if isinstance(title_obj, dict) and title_obj.get("type") == "ai-title":
-                        title = one_line(title_obj.get("aiTitle") or "")
-                        if title:
-                            info["ai_title"] = title[:MAX_TEXT]
+                    if isinstance(title_obj, dict):
+                        kind = title_obj.get("type")
+                        if kind == "custom-title":
+                            title = one_line(title_obj.get("customTitle") or "")
+                            if title:
+                                custom_title = title[:MAX_TEXT]
+                        elif kind == "ai-title":
+                            title = one_line(title_obj.get("aiTitle") or "")
+                            if title:
+                                info["ai_title"] = title[:MAX_TEXT]
                 if pending:
                     low_raw = raw.lower()
                     candidates = [
@@ -310,6 +318,7 @@ def scan_transcript(path, deep_matchers=None):
                 info["last"] = text
     except OSError as exc:
         info["error"] = str(exc)
+    info["ai_title"] = custom_title or info["ai_title"]
     return info
 
 

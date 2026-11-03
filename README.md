@@ -119,7 +119,7 @@ python3 skills/agents-info/scripts/sessions_table.py filter --since 2d
 | 来源 | 字段 |
 |---|---|
 | `~/.claude/sessions/<pid>.json` | `pid` / `sessionId` / `cwd` / `startedAt`（epoch ms）/ `name` / `status`（`idle` / `busy`） |
-| `~/.claude/projects/<slug>/<sessionId>.jsonl` | `type` / `isMeta` / `timestamp`（如 `2026-10-30T00:59:39.669Z`）/ `message.content`；`type:"ai-title"` 记录里的 `aiTitle` 就是会话标题 |
+| `~/.claude/projects/<slug>/<sessionId>.jsonl` | `type` / `isMeta` / `timestamp`（如 `2026-10-30T00:59:39.669Z`）/ `message.content`；会话标题优先取 `type:"custom-title"` 的 `customTitle`（`/rename` 或手动写入），否则取 `type:"ai-title"` 的 `aiTitle` |
 | `~/.claude/session-data/<date>-<末8位>-session.tmp` | `### Tasks`、`### Files Modified` 下的 `- ` 条目 |
 
 关键细节：
@@ -127,7 +127,7 @@ python3 skills/agents-info/scripts/sessions_table.py filter --since 2d
 - 项目目录 slug 的规则是**所有非字母数字字符都换成 `-`**，所以 `embodied_ai_umi` → `embodied-ai-umi`。直接拼路径会找不到 transcript。
 - 会话是否还活着用 `kill(pid, 0)` 判断；注册表文件在进程退出后不会自动删除。
 - 轮次只数“真实用户消息”：排除 `tool_result`、`isMeta` 系统注入、以 `<` 开头的斜杠命令/系统提醒。
-- “会话标题”来自 transcript 里 `type:"ai-title"` 记录的 `aiTitle`（Claude Code 自动生成）。同一会话有多条，取最后一条非空值；新会话可能还没生成。
+- “会话标题”优先取 transcript 里 `type:"custom-title"` 记录的 `customTitle`（用户 `/rename` 或手动补写），没有时再取 `type:"ai-title"` 的 `aiTitle`。同一类型有多条时取最后一条非空值；新会话可能还没生成。
 - 读 transcript 时只对 user 行做 JSON 解析，其余行只提取时间戳；80MB 级文件通常 1 秒内完成。
 - ECC 摘要按 `sessionId` 去掉 `-` 后的末 8 位匹配文件名，例如 `...-62de63f69f02` 对应 `2026-10-30-63f69f02-session.tmp`。
 
